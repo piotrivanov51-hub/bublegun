@@ -1,0 +1,101 @@
+name: Build StockRadar Pro APK
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 1. Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 2. Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 3. Setup Java JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: 4. Install dependencies & create Android platform
+        run: |
+          npm install
+          if [ ! -d "android" ]; then
+            npx cap add android
+          fi
+          npx cap sync android
+
+      - name: 5. Inject Android Permissions
+        run: |
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+          sed -i '/<application/i \
+          <uses-permission android:name="android.permission.CAMERA" />\n\
+          <uses-permission android:name="android.permission.FLASHLIGHT" />\n\
+          <uses-permission android:name="android.permission.VIBRATE" />\n\
+          <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n\
+          <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />\n\
+          <uses-permission android:name="android.permission.USE_EXACT_ALARM" />\n\
+          <uses-permission android:name="android.permission.WAKE_LOCK" />\n\
+          <uses-feature android:name="android.hardware.camera" android:required="false" />\n\
+          <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />' "$MANIFEST"
+
+      - name: 6. Patch MainActivity for Camera & Notifications
+        run: |
+          MAIN_ACT=$(find android/app/src/main/java -name "MainActivity.java" | head -n 1)
+          cat << 'EOF' > "$MAIN_ACT"
+          package md.piotr.stockradar;
+
+          import android.Manifest;
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.webkit.PermissionRequest;
+          import android.webkit.WebChromeClient;
+          import androidx.core.app.ActivityCompat;
+          import com.getcapacitor.BridgeActivity;
+
+          public class MainActivity extends BridgeActivity {
+              @Override
+              public void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  requestNeededPermissions();
+
+                  this.bridge.getWebView().setWebChromeClient(new WebChromeClient() {
+                      @Override
+                      public void onPermissionRequest(final PermissionRequest request) {
+                          request.grant(request.getResources());
+                      }
+                  });
+              }
+
+              private void requestNeededPermissions() {
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                      String[] perms;
+                      if (Build.VERSION.SDK_INT >= 33) {
+                          perms = new String[]{Manifest.permission.CAMERA, Manifest.permission.POST_NOTIFICATIONS};
+                      } else {
+                          perms = new String[]{Manifest.permission.CAMERA};
+                      }
+                      ActivityCompat.requestPermissions(this, perms, 101);
+                  }
+              }
+          }
+          EOF
+
+      - name: 7. Build Debug APK
+        working-directory: ./android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: 8. Upload Ready APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: StockRadar-Pro-APK
+          path: android/app/build/outputs/apk/debug/app-debug.apk
