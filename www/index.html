@@ -1,0 +1,807 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>StockRadar Pro</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+  <script src="https://unpkg.com/html5-qrcode"></script>
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <style>
+    body { -webkit-tap-highlight-color: transparent; user-select: none; font-family: system-ui, -apple-system, sans-serif; }
+    .scan-laser { animation: laser 2s infinite ease-in-out; }
+    @keyframes laser { 0%, 100% { top: 15%; opacity: 0.4; } 50% { top: 85%; opacity: 1; } }
+    #pdf-print-area { width: 794px; background: #fff; color: #000; padding: 20px; display: none; }
+    .pricetag-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+    .pricetag-card { border: 2px dashed #111; padding: 10px; height: 165px; display: flex; flex-direction: column; justify-content: space-between; position: relative; box-sizing: border-box; page-break-inside: avoid; }
+    .pricetag-promo { background: #fef08a; border: 2px solid #dc2626; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen pb-20">
+
+  <header class="bg-slate-900 border-b border-slate-800 px-4 py-3 flex items-center justify-between sticky top-0 z-30">
+    <div class="flex items-center gap-2">
+      <span class="w-3 h-3 rounded-full bg-emerald-500 animate-pulse"></span>
+      <h1 class="font-bold text-base tracking-tight">StockRadar <span class="text-emerald-400">Pro</span></h1>
+    </div>
+    <button onclick="triggerSystemAlarm('ТЕСТ: Молоко JLC 2.5% (8 шт.) — срок истекает завтра!', true)" 
+            class="bg-amber-500/20 border border-amber-500/50 text-amber-300 text-xs font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1.5 active:scale-95">
+      🔔 Тест звонка
+    </button>
+  </header>
+
+  <div id="alarm-modal" class="hidden fixed inset-0 z-50 bg-red-950/95 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center">
+    <div class="w-24 h-24 rounded-full bg-red-600 flex items-center justify-center text-5xl animate-bounce mb-6 shadow-2xl shadow-red-500/50">
+      🚨
+    </div>
+    <h2 class="text-2xl font-black text-white mb-2">ВНИМАНИЕ: СРОК ГОДНОСТИ!</h2>
+    <p id="alarm-message" class="text-red-200 text-base mb-8 max-w-xs"></p>
+    <button onclick="stopAlarmSound()" class="w-full max-w-xs bg-white text-red-900 font-black py-4 rounded-2xl text-lg shadow-xl active:scale-95">
+      🔇 ОТКЛЮЧИТЬ ЗВОНОК
+    </button>
+  </div>
+
+  <!-- ВКЛАДКА 1: ОПТИМИЗИРОВАННЫЙ СКАНЕР -->
+  <main id="tab-scanner" class="p-3 max-w-md mx-auto space-y-3">
+    <div class="grid grid-cols-2 bg-slate-900 p-1 rounded-xl border border-slate-800">
+      <button id="mode-barcode-btn" onclick="setScanMode('barcode')" class="py-2.5 rounded-lg text-sm font-bold bg-emerald-600 text-white transition">
+        ║▌║ Штрихкод + Счет
+      </button>
+      <button id="mode-ocr-btn" onclick="setScanMode('ocr')" class="py-2.5 rounded-lg text-sm font-bold text-slate-400 transition">
+        📅 Срок на пачке (OCR)
+      </button>
+    </div>
+
+    <div class="relative bg-black rounded-2xl overflow-hidden border border-slate-800 aspect-[4/3] flex items-center justify-center">
+      <div id="reader" class="w-full h-full"></div>
+      <video id="ocr-video" class="hidden w-full h-full object-cover" playsinline muted></video>
+      <canvas id="ocr-canvas" class="hidden"></canvas>
+
+      <div class="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+        <div class="w-64 h-28 border-2 border-emerald-400 rounded-xl relative shadow-[0_0_0_9999px_rgba(0,0,0,0.55)]">
+          <div class="scan-laser absolute left-2 right-2 h-0.5 bg-emerald-400 shadow-[0_0_8px_#10b981]"></div>
+        </div>
+        <span id="scan-hint" class="mt-3 text-xs font-medium bg-black/70 text-slate-200 px-3 py-1 rounded-full">
+          Наведите рамку на штрихкод товара
+        </span>
+      </div>
+
+      <div class="absolute bottom-3 left-3 right-3 flex justify-between items-center z-10">
+        <button onclick="toggleTorch()" class="bg-slate-900/80 backdrop-blur border border-slate-700 text-white px-3.5 py-2 rounded-xl text-xs font-semibold active:scale-95">
+          🔦 Фонарик
+        </button>
+        <button id="ocr-capture-btn" onclick="recognizeExpiryFromCamera()" class="hidden bg-emerald-600 text-white px-5 py-2.5 rounded-xl text-sm font-bold shadow-lg active:scale-95">
+          📸 Считать дату
+        </button>
+      </div>
+    </div>
+
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3 shadow-xl">
+      <div class="flex items-start justify-between gap-2">
+        <div>
+          <span id="card-dept" class="text-[11px] uppercase tracking-wider font-bold text-emerald-400 bg-emerald-950/60 px-2 py-0.5 rounded">Молочный отдел</span>
+          <h3 id="card-title" class="text-base font-bold text-white mt-1">Молоко JLC 2.5% 1л</h3>
+          <p id="card-ean" class="text-xs text-slate-400 font-mono">EAN: 4840012345678 • Цена: <span id="card-price">21.50</span> MDL</p>
+        </div>
+        <button onclick="openManualDrawer()" class="text-xs text-slate-400 underline">Поиск / Сменить</button>
+      </div>
+
+      <div class="flex items-center justify-between bg-slate-950 p-2 rounded-xl border border-slate-800">
+        <button onclick="adjustQty(-1)" class="w-14 h-12 rounded-lg bg-slate-800 text-2xl font-bold active:bg-slate-700">−</button>
+        <div class="text-center cursor-pointer" onclick="promptExactQty()">
+          <span id="card-qty" class="text-2xl font-black text-white">8</span>
+          <span class="block text-[10px] text-slate-400">уп. (нажмите для ввода)</span>
+        </div>
+        <button onclick="adjustQty(1)" class="w-14 h-12 rounded-lg bg-emerald-600 text-2xl font-bold text-white active:bg-emerald-500">+</button>
+      </div>
+
+      <div class="space-y-1.5">
+        <div class="flex justify-between items-center text-xs">
+          <span class="text-slate-400">Срок годности партии:</span>
+          <span id="ocr-badge" class="text-emerald-400 font-semibold">Готов к сохранению</span>
+        </div>
+        <div class="flex gap-1.5 overflow-x-auto pb-1">
+          <button onclick="setQuickDays(0)" class="px-2.5 py-1.5 bg-slate-800 rounded-lg text-xs font-semibold shrink-0 active:bg-emerald-600">Сегодня</button>
+          <button onclick="setQuickDays(1)" class="px-2.5 py-1.5 bg-slate-800 rounded-lg text-xs font-semibold shrink-0 active:bg-emerald-600">Завтра</button>
+          <button onclick="setQuickDays(3)" class="px-2.5 py-1.5 bg-slate-800 rounded-lg text-xs font-semibold shrink-0 active:bg-emerald-600">+3 дня</button>
+          <button onclick="setQuickDays(7)" class="px-2.5 py-1.5 bg-slate-800 rounded-lg text-xs font-semibold shrink-0 active:bg-emerald-600">+7 дн.</button>
+          <input type="date" id="card-expiry" class="bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-xs text-white ml-auto" />
+        </div>
+      </div>
+
+      <div class="grid grid-cols-2 gap-2 pt-1">
+        <button onclick="saveCurrentBatch()" class="bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-3 rounded-xl text-sm active:scale-95">
+          ✅ Сохранить партию
+        </button>
+        <button onclick="addCurrentToPricetags()" class="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold py-3 rounded-xl text-sm active:scale-95">
+          🏷️ В печать PDF
+        </button>
+      </div>
+    </div>
+
+    <details id="manual-drawer" class="bg-slate-900/70 border border-slate-800 rounded-xl p-3 text-xs">
+      <summary class="font-semibold text-slate-300 cursor-pointer">⌨️ Ручной поиск товара / Добавление в каталог</summary>
+      <div class="mt-3 space-y-2">
+        <input id="manual-search" type="text" placeholder="Введите штрихкод или название..." 
+               oninput="searchCatalog(this.value)"
+               class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white" />
+        <div id="catalog-quick-list" class="space-y-1 max-h-36 overflow-y-auto"></div>
+        <button onclick="createNewCatalogItem()" class="w-full bg-slate-800 text-slate-200 py-2 rounded-lg font-semibold">
+          + Создать новый товар в базе
+        </button>
+      </div>
+    </details>
+  </main>
+
+  <!-- ВКЛАДКА 2: УВЕДОМЛЕНИЯ В ШТОРКУ И ПАРТИИ -->
+  <main id="tab-alerts" class="hidden p-3 max-w-md mx-auto space-y-3">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
+      <div class="flex items-center justify-between">
+        <div>
+          <h2 class="font-bold text-base">Уведомления в шторку + Звонок</h2>
+          <p class="text-xs text-slate-400">Пуш-уведомление Android и звуковой сигнал</p>
+        </div>
+        <button onclick="requestAndroidNotifications()" id="notif-perm-btn" class="bg-emerald-600 text-white text-xs font-bold px-3 py-2 rounded-xl">
+          Включить шторку
+        </button>
+      </div>
+      <div class="grid grid-cols-2 gap-2 text-xs">
+        <button onclick="checkExpiringAndNotify(true)" class="bg-slate-800 border border-slate-700 py-2.5 rounded-xl font-semibold text-amber-300">
+          🔔 Проверить сейчас
+        </button>
+        <button onclick="scheduleAlarmIn5Sec()" class="bg-slate-800 border border-slate-700 py-2.5 rounded-xl font-semibold text-emerald-300">
+          ⏱️ Тест через 5 сек (в фоне)
+        </button>
+      </div>
+    </div>
+    <div id="batches-list" class="space-y-2"></div>
+  </main>
+
+  <!-- ВКЛАДКА 3: ПЕЧАТЬ И СКАЧИВАНИЕ PDF ЦЕННИКОВ -->
+  <main id="tab-pricetags" class="hidden p-3 max-w-md mx-auto space-y-3">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
+      <div class="flex items-center justify-between">
+        <div>
+          <h2 class="font-bold text-base">Генератор ценников (PDF A4)</h2>
+          <p class="text-xs text-slate-400">Сохранение и отправка готового PDF файла</p>
+        </div>
+        <span id="pricetag-count-badge" class="bg-amber-500 text-slate-950 font-black text-xs px-2.5 py-1 rounded-full">0 шт.</span>
+      </div>
+
+      <div class="grid grid-cols-2 gap-2 text-xs bg-slate-950 p-3 rounded-xl border border-slate-800">
+        <input id="pt-name" type="text" placeholder="Название товара" class="col-span-2 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-2 text-white" />
+        <input id="pt-price" type="number" step="0.01" placeholder="Новая цена (MDL)" class="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-2 text-white" />
+        <input id="pt-old-price" type="number" step="0.01" placeholder="Старая цена" class="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-2 text-white" />
+        <input id="pt-ean" type="text" placeholder="Штрихкод EAN" class="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-2 text-white" />
+        <select id="pt-discount" class="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-2 text-white">
+          <option value="">Обычный ценник</option>
+          <option value="АКЦИЯ">Желтый ценник (АКЦИЯ)</option>
+          <option value="УЦЕНКА -30%">Стикер УЦЕНКА -30%</option>
+          <option value="УЦЕНКА -50%">Стикер УЦЕНКА -50%</option>
+        </select>
+        <button onclick="addCustomPricetag()" class="col-span-2 bg-slate-800 hover:bg-slate-700 text-white font-bold py-2 rounded-lg">
+          + Добавить ценник в список
+        </button>
+      </div>
+
+      <button id="pdf-download-btn" onclick="downloadPricetagsPDF()" class="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-black py-3.5 rounded-xl text-sm shadow-lg flex items-center justify-center gap-2 active:scale-95">
+        📥 СФОРМИРОВАТЬ И СКАЧАТЬ PDF
+      </button>
+    </div>
+
+    <div id="pricetags-queue" class="space-y-2"></div>
+  </main>
+
+  <div id="pdf-print-area">
+    <div style="display:flex; justify-content:space-between; border-bottom:2px solid #000; padding-bottom:6px; margin-bottom:12px; font-size:12px; font-weight:bold;">
+      <span>STOCKRADAR PRO — ЛИСТ ПЕЧАТИ ЦЕННИКОВ И УЦЕНКИ</span>
+      <span id="pdf-date-label"></span>
+    </div>
+    <div id="pdf-grid" class="pricetag-grid"></div>
+  </div>
+
+  <nav class="fixed bottom-0 left-0 right-0 bg-slate-900/95 backdrop-blur border-t border-slate-800 grid grid-cols-3 z-40 max-w-md mx-auto">
+    <button onclick="switchTab('scanner')" id="nav-scanner" class="py-3 flex flex-col items-center text-emerald-400 font-bold text-xs">
+      <span class="text-lg">📷</span>
+      <span>Сканер</span>
+    </button>
+    <button onclick="switchTab('alerts')" id="nav-alerts" class="py-3 flex flex-col items-center text-slate-400 font-bold text-xs relative">
+      <span class="text-lg">🔔</span>
+      <span>Сроки (<span id="urgent-counter">0</span>)</span>
+    </button>
+    <button onclick="switchTab('pricetags')" id="nav-pricetags" class="py-3 flex flex-col items-center text-slate-400 font-bold text-xs">
+      <span class="text-lg">🏷️</span>
+      <span>Ценники PDF</span>
+    </button>
+  </nav>
+
+  <script>
+    const DEFAULT_CATALOG = [
+      { id: 'p1', name: 'Молоко JLC 2.5% 1л', ean: '4840012345678', dept: 'Молочный отдел', price: 21.50, oldPrice: 24.90 },
+      { id: 'p2', name: 'Йогурт Căsuța Mea 350г', ean: '4840022233344', dept: 'Молочный отдел', price: 16.80, oldPrice: null },
+      { id: 'p3', name: 'Творог рассыпчатый 5% 400г', ean: '4840055566677', dept: 'Молочный отдел', price: 34.00, oldPrice: 39.50 },
+      { id: 'p4', name: 'Колбаса Докторская Carmez 500г', ean: '4840099988877', dept: 'Гастрономия', price: 68.00, oldPrice: null }
+    ];
+
+    let catalog = JSON.parse(localStorage.getItem('sr_catalog')) || DEFAULT_CATALOG;
+    let batches = JSON.parse(localStorage.getItem('sr_batches')) || [
+      { id: 'b1', name: 'Молоко JLC 2.5% 1л', ean: '4840012345678', dept: 'Молочный отдел', qty: 8, expiry: getOffsetDate(1), price: 21.50 },
+      { id: 'b2', name: 'Йогурт Căsuța Mea 350г', ean: '4840022233344', dept: 'Молочный отдел', qty: 12, expiry: getOffsetDate(0), price: 16.80 },
+      { id: 'b3', name: 'Творог рассыпчатый 5% 400г', ean: '4840055566677', dept: 'Молочный отдел', qty: 6, expiry: getOffsetDate(-1), price: 34.00 }
+    ];
+    let pricetags = JSON.parse(localStorage.getItem('sr_pricetags')) || [
+      { id: 'pt1', name: 'Молоко JLC 2.5% 1л', ean: '4840012345678', price: 15.00, oldPrice: 21.50, badge: 'УЦЕНКА -30%' },
+      { id: 'pt2', name: 'Творог рассыпчатый 5% 400г', ean: '4840055566677', price: 34.00, oldPrice: 39.50, badge: 'АКЦИЯ' }
+    ];
+
+    let currentProduct = catalog[0];
+    let currentQty = 8;
+    let html5QrScanner = null;
+    let alarmInterval = null;
+    let audioCtx = null;
+
+    function getOffsetDate(days) {
+      const d = new Date();
+      d.setDate(d.getDate() + days);
+      return d.toISOString().split('T')[0];
+    }
+
+    function saveState() {
+      localStorage.setItem('sr_catalog', JSON.stringify(catalog));
+      localStorage.setItem('sr_batches', JSON.stringify(batches));
+      localStorage.setItem('sr_pricetags', JSON.stringify(pricetags));
+      renderBatches();
+      renderPricetags();
+    }
+
+    async function initNativeNotifications() {
+      const LocalNotifs = window.Capacitor?.Plugins?.LocalNotifications;
+      if (LocalNotifs) {
+        try {
+          await LocalNotifs.requestPermissions();
+          await LocalNotifs.createChannel({
+            id: 'stockradar_alarm_channel',
+            name: 'Срочные уведомления StockRadar',
+            description: 'Звуковые оповещения в шторку при истечении сроков',
+            importance: 5,
+            visibility: 1,
+            vibration: true,
+            lights: true
+          });
+        } catch (e) {}
+      }
+    }
+
+    async function requestAndroidNotifications() {
+      await initNativeNotifications();
+      if ('Notification' in window) {
+        const perm = await Notification.requestPermission();
+        if (perm === 'granted') {
+          document.getElementById('notif-perm-btn').textContent = '✅ Шторка активна';
+        }
+      }
+      triggerSystemAlarm('Уведомления StockRadar Pro в шторку телефона подключены!', false);
+    }
+
+    function startAlarmSound() {
+      stopAlarmSound();
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass) return;
+      audioCtx = new AudioContextClass();
+
+      const playBeepPair = () => {
+        if (!audioCtx) return;
+        const now = audioCtx.currentTime;
+        [880, 1174.66].forEach((freq, idx) => {
+          const osc = audioCtx.createOscillator();
+          const gain = audioCtx.createGain();
+          osc.type = 'square';
+          osc.frequency.setValueAtTime(freq, now + idx * 0.18);
+          gain.gain.setValueAtTime(0.35, now + idx * 0.18);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + idx * 0.18 + 0.15);
+          osc.connect(gain);
+          gain.connect(audioCtx.destination);
+          osc.start(now + idx * 0.18);
+          osc.stop(now + idx * 0.18 + 0.16);
+        });
+        if (navigator.vibrate) navigator.vibrate([400, 150, 400]);
+      };
+
+      playBeepPair();
+      alarmInterval = setInterval(playBeepPair, 900);
+    }
+
+    function stopAlarmSound() {
+      if (alarmInterval) { clearInterval(alarmInterval); alarmInterval = null; }
+      if (audioCtx) { audioCtx.close().catch(() => {}); audioCtx = null; }
+      if (navigator.vibrate) navigator.vibrate(0);
+      document.getElementById('alarm-modal').classList.add('hidden');
+    }
+
+    async function triggerSystemAlarm(messageText, withRinging = true) {
+      const LocalNotifs = window.Capacitor?.Plugins?.LocalNotifications;
+      if (LocalNotifs) {
+        try {
+          await LocalNotifs.schedule({
+            notifications: [{
+              id: Math.floor(Date.now() % 100000),
+              title: '🚨 StockRadar Pro: Сроки годности!',
+              body: messageText,
+              channelId: 'stockradar_alarm_channel',
+              schedule: { at: new Date(Date.now() + 300) }
+            }]
+          });
+        } catch (e) {}
+      }
+
+      if ('Notification' in window && Notification.permission === 'granted') {
+        try {
+          new Notification('🚨 StockRadar Pro: Сроки!', {
+            body: messageText,
+            vibrate: [500, 200, 500, 200, 800],
+            requireInteraction: true
+          });
+        } catch (e) {}
+      }
+
+      if (withRinging) {
+        document.getElementById('alarm-message').textContent = messageText;
+        document.getElementById('alarm-modal').classList.remove('hidden');
+        startAlarmSound();
+      }
+    }
+
+    function scheduleAlarmIn5Sec() {
+      const LocalNotifs = window.Capacitor?.Plugins?.LocalNotifications;
+      if (LocalNotifs) {
+        LocalNotifs.schedule({
+          notifications: [{
+            id: Math.floor(Date.now() % 100000),
+            title: '🚨 СРОЧНАЯ ПРОВЕРКА СРОКОВ!',
+            body: 'Внимание: 3 партии в молочном отделе требуют уценки!',
+            channelId: 'stockradar_alarm_channel',
+            schedule: { at: new Date(Date.now() + 5000) }
+          }]
+        });
+      }
+      alert('Сверните приложение! Через 5 секунд придет уведомление в шторку со звонком.');
+      setTimeout(() => {
+        triggerSystemAlarm('Срочная проверка: 3 партии в молочном отделе требуют уценки или снятия с полки!', true);
+      }, 5000);
+    }
+
+    function checkExpiringAndNotify(withSound) {
+      const urgent = batches.filter(b => getDaysDiff(b.expiry) <= 1);
+      if (urgent.length > 0) {
+        const names = urgent.map(u => `${u.name} (${u.qty} шт.)`).join(', ');
+        triggerSystemAlarm(`Требуют внимания (${urgent.length} поз.): ${names}`, withSound);
+      } else if (withSound) {
+        triggerSystemAlarm('Все проверенные партии в пределах нормы!', false);
+      }
+    }
+
+    async function downloadPricetagsPDF() {
+      if (pricetags.length === 0) {
+        alert('Список ценников пуст!');
+        return;
+      }
+
+      const btn = document.getElementById('pdf-download-btn');
+      btn.textContent = '⏳ ФОРМИРУЕМ PDF...';
+
+      const printArea = document.getElementById('pdf-print-area');
+      const grid = document.getElementById('pdf-grid');
+      document.getElementById('pdf-date-label').textContent = 'Дата печати: ' + new Date().toLocaleDateString('ru-RU');
+
+      grid.innerHTML = pricetags.map(pt => {
+        const isPromo = Boolean(pt.badge || pt.oldPrice);
+        const [intPart, decPart] = Number(pt.price).toFixed(2).split('.');
+        return `
+          <div class="pricetag-card ${isPromo ? 'pricetag-promo' : ''}">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <span style="font-size:10px; font-weight:800;">STOCKRADAR</span>
+              ${pt.badge ? `<span style="background:#dc2626; color:#fff; font-size:9px; font-weight:900; padding:2px 5px; border-radius:3px;">${pt.badge}</span>` : ''}
+            </div>
+            <div style="font-size:12px; font-weight:700; line-height:1.15; margin-top:4px; max-height:30px; overflow:hidden;">
+              ${pt.name}
+            </div>
+            <div style="display:flex; align-items:baseline; justify-content:space-between; margin-top:4px;">
+              <div>
+                ${pt.oldPrice ? `<span style="font-size:11px; text-decoration:line-through; color:#555;">${Number(pt.oldPrice).toFixed(2)} MDL</span>` : ''}
+              </div>
+              <div style="display:flex; align-items:flex-start; font-weight:900; color:#000;">
+                <span style="font-size:32px; line-height:1;">${intPart}</span>
+                <div style="display:flex; flex-direction:column; margin-left:2px;">
+                  <span style="font-size:14px; line-height:1;">.${decPart}</span>
+                  <span style="font-size:9px; font-weight:700;">MDL</span>
+                </div>
+              </div>
+            </div>
+            <div style="border-top:1px solid #444; padding-top:4px; display:flex; justify-content:space-between; font-size:9px; font-family:monospace;">
+              <span>EAN: ${pt.ean || '—'}</span>
+              <span>${new Date().toLocaleDateString('ru-RU')}</span>
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      printArea.style.display = 'block';
+      const filename = `StockRadar_Pricetags_${new Date().toISOString().slice(0,10)}.pdf`;
+      const opt = {
+        margin: [8, 8, 8, 8],
+        filename: filename,
+        image: { type: 'jpeg', quality: 0.98 },
+        html2canvas: { scale: 2, useCORS: true },
+        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+      };
+
+      try {
+        const Filesystem = window.Capacitor?.Plugins?.Filesystem;
+        const Share = window.Capacitor?.Plugins?.Share;
+
+        if (Filesystem && Share) {
+          const pdfDataUri = await html2pdf().set(opt).from(printArea).outputPdf('datauristring');
+          const base64Data = pdfDataUri.split(',')[1];
+          const savedFile = await Filesystem.writeFile({
+            path: filename,
+            data: base64Data,
+            directory: 'CACHE'
+          });
+          await Share.share({
+            title: 'Ценники PDF',
+            text: 'Готовый лист ценников для печати',
+            url: savedFile.uri,
+            dialogTitle: 'Сохранить или отправить PDF ценники'
+          });
+        } else {
+          await html2pdf().set(opt).from(printArea).save();
+        }
+      } catch (err) {
+        await html2pdf().set(opt).from(printArea).save();
+      } finally {
+        printArea.style.display = 'none';
+        btn.textContent = '📥 СФОРМИРОВАТЬ И СКАЧАТЬ PDF';
+      }
+    }
+
+    function addCurrentToPricetags() {
+      const days = getDaysDiff(document.getElementById('card-expiry').value);
+      const isDiscount = days <= 2;
+      const newPrice = isDiscount ? (currentProduct.price * 0.7).toFixed(2) : currentProduct.price;
+      pricetags.unshift({
+        id: 'pt_' + Date.now(),
+        name: currentProduct.name,
+        ean: currentProduct.ean,
+        price: Number(newPrice),
+        oldPrice: isDiscount ? currentProduct.price : currentProduct.oldPrice,
+        badge: isDiscount ? 'УЦЕНКА -30%' : (currentProduct.oldPrice ? 'АКЦИЯ' : '')
+      });
+      saveState();
+      alert(`Ценник «${currentProduct.name}» добавлен в PDF!`);
+    }
+
+    function addCustomPricetag() {
+      const name = document.getElementById('pt-name').value.trim();
+      const price = parseFloat(document.getElementById('pt-price').value);
+      const oldPrice = parseFloat(document.getElementById('pt-old-price').value) || null;
+      const ean = document.getElementById('pt-ean').value.trim();
+      const badge = document.getElementById('pt-discount').value;
+      if (!name || isNaN(price)) {
+        alert('Укажите название товара и цену!');
+        return;
+      }
+      pricetags.unshift({ id: 'pt_' + Date.now(), name, ean, price, oldPrice, badge });
+      document.getElementById('pt-name').value = '';
+      document.getElementById('pt-price').value = '';
+      document.getElementById('pt-old-price').value = '';
+      document.getElementById('pt-ean').value = '';
+      saveState();
+    }
+
+    function setScanMode(mode) {
+      const bBtn = document.getElementById('mode-barcode-btn');
+      const oBtn = document.getElementById('mode-ocr-btn');
+      const ocrCaptureBtn = document.getElementById('ocr-capture-btn');
+      const hint = document.getElementById('scan-hint');
+
+      if (mode === 'barcode') {
+        bBtn.className = 'py-2.5 rounded-lg text-sm font-bold bg-emerald-600 text-white transition';
+        oBtn.className = 'py-2.5 rounded-lg text-sm font-bold text-slate-400 transition';
+        ocrCaptureBtn.classList.add('hidden');
+        hint.textContent = 'Наведите рамку на штрихкод товара';
+        startBarcodeScanner();
+      } else {
+        oBtn.className = 'py-2.5 rounded-lg text-sm font-bold bg-emerald-600 text-white transition';
+        bBtn.className = 'py-2.5 rounded-lg text-sm font-bold text-slate-400 transition';
+        ocrCaptureBtn.classList.remove('hidden');
+        hint.textContent = 'Наведите на дату (EXP / Годен до) и нажмите «Считать дату»';
+        startOcrCamera();
+      }
+    }
+
+    async function startBarcodeScanner() {
+      stopOcrCamera();
+      document.getElementById('reader').classList.remove('hidden');
+      if (html5QrScanner) return;
+      try {
+        html5QrScanner = new Html5Qrcode('reader');
+        await html5QrScanner.start(
+          { facingMode: 'environment' },
+          { fps: 10, qrbox: { width: 240, height: 100 } },
+          (decodedText) => onBarcodeDetected(decodedText),
+          () => {}
+        );
+      } catch (e) {
+        document.getElementById('scan-hint').textContent = 'Разрешите доступ к камере или введите код вручную';
+      }
+    }
+
+    async function stopBarcodeScanner() {
+      if (html5QrScanner) {
+        try { await html5QrScanner.stop(); html5QrScanner.clear(); } catch (e) {}
+        html5QrScanner = null;
+      }
+    }
+
+    async function startOcrCamera() {
+      await stopBarcodeScanner();
+      document.getElementById('reader').classList.add('hidden');
+      const video = document.getElementById('ocr-video');
+      video.classList.remove('hidden');
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+        video.srcObject = stream;
+        await video.play();
+      } catch (e) {
+        document.getElementById('scan-hint').textContent = 'Камера недоступна';
+      }
+    }
+
+    function stopOcrCamera() {
+      const video = document.getElementById('ocr-video');
+      if (video.srcObject) {
+        video.srcObject.getTracks().forEach(t => t.stop());
+        video.srcObject = null;
+      }
+      video.classList.add('hidden');
+    }
+
+    function onBarcodeDetected(code) {
+      if (navigator.vibrate) navigator.vibrate(80);
+      let found = catalog.find(p => p.ean === code);
+      if (!found) {
+        const name = prompt(`Новый штрихкод ${code}. Введите название товара:`, `Товар ${code.slice(-4)}`);
+        if (!name) return;
+        const price = parseFloat(prompt('Введите цену (MDL):', '25.00')) || 25.00;
+        found = { id: 'p_' + Date.now(), name, ean: code, dept: 'Бакалея', price, oldPrice: null };
+        catalog.unshift(found);
+        saveState();
+      }
+      selectProduct(found);
+      adjustQty(1);
+    }
+
+    function parseSmartExpiryDate(rawText) {
+      const clean = rawText.toUpperCase().replace(/O/g, '0');
+      const regex = /(\b\d{2}[./-]\d{2}[./-]\d{2,4}\b)/g;
+      const matches = [...clean.matchAll(regex)];
+      if (matches.length === 0) return null;
+
+      let candidates = matches.map(m => {
+        const [d, mo, yRaw] = m[0].split(/[./-]/);
+        const year = yRaw.length === 2 ? '20' + yRaw : yRaw;
+        const iso = `${year}-${mo.padStart(2, '0')}-${d.padStart(2, '0')}`;
+        const idx = m.index || 0;
+        const prefix = clean.slice(Math.max(0, idx - 18), idx);
+        const isProd = /PROD|FAB|ИЗГ|ДАТА ВЫР/.test(prefix);
+        const isExp = /EXP|ГОДЕН|ДО|VALAB|CONSUM/.test(prefix);
+        return { iso, score: isExp ? 10 : (isProd ? -5 : 1) };
+      });
+
+      candidates.sort((a, b) => b.score - a.score || b.iso.localeCompare(a.iso));
+      return candidates[0].iso;
+    }
+
+    async function recognizeExpiryFromCamera() {
+      const video = document.getElementById('ocr-video');
+      const canvas = document.getElementById('ocr-canvas');
+      const badge = document.getElementById('ocr-badge');
+      badge.textContent = '⏳ Чтение даты...';
+
+      try {
+        canvas.width = video.videoWidth || 640;
+        canvas.height = video.videoHeight || 480;
+        canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+        const { data: { text } } = await Tesseract.recognize(canvas, 'eng+rus');
+        const isoDate = parseSmartExpiryDate(text);
+        if (isoDate) {
+          document.getElementById('card-expiry').value = isoDate;
+          badge.textContent = `✅ Распознано: ${isoDate.split('-').reverse().join('.')}`;
+          if (navigator.vibrate) navigator.vibrate(100);
+        } else {
+          badge.textContent = '⚠️ Проверьте дату вручную';
+        }
+      } catch (e) {
+        badge.textContent = '⚠️ Проверьте дату вручную';
+      }
+    }
+
+    function selectProduct(prod) {
+      currentProduct = prod;
+      document.getElementById('card-dept').textContent = prod.dept;
+      document.getElementById('card-title').textContent = prod.name;
+      document.getElementById('card-ean').innerHTML = `EAN: ${prod.ean} • Цена: <span id="card-price">${prod.price.toFixed(2)}</span> MDL`;
+    }
+
+    function adjustQty(delta) {
+      currentQty = Math.max(1, currentQty + delta);
+      document.getElementById('card-qty').textContent = currentQty;
+    }
+
+    function promptExactQty() {
+      const val = prompt('Введите точное количество упаковок:', currentQty);
+      if (val !== null && !isNaN(parseInt(val))) {
+        currentQty = Math.max(1, parseInt(val));
+        document.getElementById('card-qty').textContent = currentQty;
+      }
+    }
+
+    function setQuickDays(days) {
+      const iso = getOffsetDate(days);
+      document.getElementById('card-expiry').value = iso;
+      document.getElementById('ocr-badge').textContent = `Выбрано: ${iso.split('-').reverse().join('.')}`;
+    }
+
+    function saveCurrentBatch() {
+      const expiry = document.getElementById('card-expiry').value;
+      if (!expiry) return;
+      batches.unshift({
+        id: 'b_' + Date.now(),
+        name: currentProduct.name,
+        ean: currentProduct.ean,
+        dept: currentProduct.dept,
+        qty: currentQty,
+        expiry: expiry,
+        price: currentProduct.price
+      });
+      saveState();
+
+      const diff = getDaysDiff(expiry);
+      if (diff <= 1) {
+        triggerSystemAlarm(`Критическая партия: ${currentProduct.name} (${currentQty} шт., до ${expiry.split('-').reverse().join('.')})`, true);
+      } else {
+        alert(`Сохранено: ${currentProduct.name} (${currentQty} шт.)`);
+      }
+    }
+
+    function getDaysDiff(isoDate) {
+      const today = new Date(); today.setHours(0,0,0,0);
+      const target = new Date(isoDate); target.setHours(0,0,0,0);
+      return Math.round((target - today) / (1000 * 60 * 60 * 24));
+    }
+
+    function renderBatches() {
+      const list = document.getElementById('batches-list');
+      const urgentCount = batches.filter(b => getDaysDiff(b.expiry) <= 3).length;
+      document.getElementById('urgent-counter').textContent = urgentCount;
+
+      list.innerHTML = batches.map(b => {
+        const days = getDaysDiff(b.expiry);
+        let badge = `<span class="bg-emerald-950 text-emerald-400 px-2 py-0.5 rounded text-xs font-bold">🟢 ${days} дн.</span>`;
+        if (days < 0) badge = `<span class="bg-red-950 text-red-400 px-2 py-0.5 rounded text-xs font-bold">🔴 ПРОСРОЧЕНО (${Math.abs(days)} дн.)</span>`;
+        else if (days <= 1) badge = `<span class="bg-amber-950 text-amber-300 px-2 py-0.5 rounded text-xs font-bold">🟠 СРОЧНО (${days === 0 ? 'Сегодня' : 'Завтра'})</span>`;
+        else if (days <= 3) badge = `<span class="bg-yellow-950 text-yellow-300 px-2 py-0.5 rounded text-xs font-bold">🟡 Осталось ${days} дн.</span>`;
+
+        return `
+          <div class="bg-slate-900 border border-slate-800 rounded-xl p-3 flex items-center justify-between gap-2">
+            <div>
+              <div class="flex items-center gap-2">${badge} <span class="text-xs text-slate-400">${b.dept}</span></div>
+              <h4 class="font-bold text-sm text-white mt-1">${b.name}</h4>
+              <p class="text-xs text-slate-400">Годен до: <b>${b.expiry.split('-').reverse().join('.')}</b> • Кол-во: <b>${b.qty} уп.</b></p>
+            </div>
+            <button onclick="createDiscountTagFromBatch('${b.id}')" class="bg-amber-500/20 border border-amber-500/40 text-amber-300 px-2.5 py-2 rounded-lg text-xs font-bold shrink-0">
+              🏷️ В PDF -30%
+            </button>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function createDiscountTagFromBatch(batchId) {
+      const b = batches.find(x => x.id === batchId);
+      if (!b) return;
+      pricetags.unshift({
+        id: 'pt_' + Date.now(),
+        name: b.name,
+        ean: b.ean,
+        price: Number((b.price * 0.7).toFixed(2)),
+        oldPrice: b.price,
+        badge: 'УЦЕНКА -30%'
+      });
+      saveState();
+      switchTab('pricetags');
+    }
+
+    function renderPricetags() {
+      document.getElementById('pricetag-count-badge').textContent = `${pricetags.length} шт.`;
+      document.getElementById('pricetags-queue').innerHTML = pricetags.map((pt, idx) => `
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-3 flex items-center justify-between">
+          <div>
+            <div class="flex items-center gap-2">
+              <span class="text-xs font-bold px-2 py-0.5 rounded ${pt.badge ? 'bg-red-600 text-white' : 'bg-slate-800 text-slate-300'}">${pt.badge || 'Стандарт'}</span>
+              <span class="text-xs font-mono text-slate-400">${pt.ean || ''}</span>
+            </div>
+            <h4 class="font-bold text-sm text-white mt-1">${pt.name}</h4>
+            <p class="text-xs text-amber-400 font-bold">${Number(pt.price).toFixed(2)} MDL ${pt.oldPrice ? `<span class="line-through text-slate-500 ml-1">${Number(pt.oldPrice).toFixed(2)} MDL</span>` : ''}</p>
+          </div>
+          <button onclick="removePricetag(${idx})" class="text-slate-500 hover:text-red-400 text-lg px-2">✕</button>
+        </div>
+      `).join('');
+    }
+
+    function removePricetag(index) {
+      pricetags.splice(index, 1);
+      saveState();
+    }
+
+    function searchCatalog(query) {
+      const q = query.toLowerCase();
+      const filtered = catalog.filter(p => p.name.toLowerCase().includes(q) || p.ean.includes(q));
+      document.getElementById('catalog-quick-list').innerHTML = filtered.map(p => `
+        <div onclick='selectProduct(${JSON.stringify(p)})' class="p-2 bg-slate-950 rounded-lg border border-slate-800 flex justify-between items-center cursor-pointer">
+          <span>${p.name}</span>
+          <span class="text-slate-400 font-mono">${p.price.toFixed(2)} MDL</span>
+        </div>
+      `).join('');
+    }
+
+    function createNewCatalogItem() {
+      const name = prompt('Название нового товара:');
+      if (!name) return;
+      const ean = prompt('Штрихкод (необязательно):', '48400');
+      const price = parseFloat(prompt('Цена (MDL):', '20.00')) || 20.00;
+      const item = { id: 'p_' + Date.now(), name, ean, dept: 'Бакалея', price, oldPrice: null };
+      catalog.unshift(item);
+      selectProduct(item);
+      saveState();
+      searchCatalog('');
+    }
+
+    function openManualDrawer() {
+      document.getElementById('manual-drawer').open = true;
+      document.getElementById('manual-search').focus();
+    }
+
+    async function toggleTorch() {
+      const video = document.querySelector('video');
+      if (!video || !video.srcObject) return;
+      const track = video.srcObject.getVideoTracks()[0];
+      if (!track) return;
+      try {
+        const cur = track.getSettings().torch || false;
+        await track.applyConstraints({ advanced: [{ torch: !cur }] });
+      } catch (e) {}
+    }
+
+    function switchTab(tab) {
+      ['scanner', 'alerts', 'pricetags'].forEach(t => {
+        document.getElementById(`tab-${t}`).classList.toggle('hidden', t !== tab);
+        document.getElementById(`nav-${t}`).className = t === tab
+          ? 'py-3 flex flex-col items-center text-emerald-400 font-bold text-xs relative'
+          : 'py-3 flex flex-col items-center text-slate-400 font-bold text-xs relative';
+      });
+    }
+
+    window.addEventListener('DOMContentLoaded', () => {
+      initNativeNotifications();
+      document.getElementById('card-expiry').value = getOffsetDate(3);
+      selectProduct(catalog[0]);
+      searchCatalog('');
+      renderBatches();
+      renderPricetags();
+      startBarcodeScanner();
+    });
+  </script>
+</body>
+</html>
